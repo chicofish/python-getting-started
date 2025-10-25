@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VIPIX Historical Data Chart</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            text-align: center;
+        }
+        h1 {
+            color: #2c3e50;
+        }
+        .chart-container {
+            margin: 0 auto;
+            width: 90%;
+            max-width: 1000px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            padding: 10px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+        }
+        .line {
+            fill: none;
+            stroke: steelblue;
+            stroke-width: 2;
+        }
+        .axis path,
+        .axis line {
+            fill: none;
+            stroke: #000;
+            shape-rendering: crispEdges;
+        }
+        .loading-message {
+            font-size: 1.2em;
+            color: #888;
+            margin-top: 50px;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>VIPIX (Vanguard Inflation-Protected Securities) Price History</h1>
+    <div class="chart-container">
+        <div id="chart">
+            <div class="loading-message">Loading data and drawing chart...</div>
+        </div>
+    </div>
+
+    <script>
+        // Configuration
+        const API_URL = "http://127.0.0.1:8000/get-401k-data"; // MUST match your FastAPI server address
+        const TARGET_TICKER = "VIPIX";
+
+        // Chart dimensions
+        const margin = { top: 20, right: 30, bottom: 50, left: 60 };
+        const width = 900 - margin.left - margin.right;
+        const height = 500 - margin.top - margin.bottom;
+
+        // Date and Value parsers
+        const parseDate = d3.timeParse("%Y-%m-%d");
+
+        // Function to draw the chart
+        async function drawChart() {
+            try {
+                // 1. Fetch Data from the FastAPI endpoint
+                const response = await fetch(API_URL);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const result = await response.json();
+
+                if (result.status !== "success" || !result.data) {
+                    throw new Error("API returned an error or missing data.");
+                }
+
+                // 2. Process and Filter Data
+                let data = result.data
+                    .map(d => {
+                        // The date key is not explicitly named in the output, but is the key of the dictionary
+                        // when orient='records' is used, which means we must infer it 
+                        // by looking at the first key that isn't a ticker.
+                        // However, since the API returns orient="records", we assume the date needs to be
+                        // explicitly extracted or the structure is {'Date': '...', 'TICKER_A': value, ...}
+                        
+                        // We will assume the DataFrame index (date) comes through as the first key named 'index' 
+                        // or similar when converted to JSON via to_dict(orient="records"). 
+                        // Since 'orient="records"' does not include the index by default, 
+                        // we'll rely on the assumption that the web app developer modified the API 
+                        // to include the date (e.g., using reset_index() before to_dict()).
+                        
+                        // *** ADJUSTMENT: Since `to_dict(orient="records")` is used, the Date index is NOT included.
+                        // We must modify the API or simplify. For this example, we'll *assume* the date 
+                        // is available under a key named "Date" after `clean_df.reset_index()` was run in the API.
+                        const dateKey = Object.keys(d)[0]; // Assume first key is the date if index was reset
+                        
+                        return {
+                            date: parseDate(d[dateKey] ? d[dateKey].substring(0, 10) : null), // Try to parse the date string (e.g., '2022-07-05T00:00:00')
+                            value: +d[TARGET_TICKER]
+                        };
+                    })
+                    .filter(d => d.date && d.value); // Filter out any null dates or values
+
+                // Sort data by date
+                data.sort((a, b) => a.date - b.date);
+
+
+                // 3. Set up SVG container
+                d3.select(".loading-message").remove(); // Remove loading message
+
+                const svg = d3.select("#chart")
+                    .append("svg")
+                    .attr("width", width + margin.left + margin.right)
+                    .attr("height", height + margin.top + margin.bottom)
+                    .append("g")
+                    .attr("transform", `translate(${margin.left},${margin.top})`);
+
+                // 4. Define Scales
+                const x = d3.scaleTime()
+                    .domain(d3.extent(data, d => d.date))
+                    .range([0, width]);
+
+                const y = d3.scaleLinear()
+                    .domain([d3.min(data, d => d.value) * 0.98, d3.max(data, d => d.value) * 1.02]) // Add padding
+                    .range([height, 0]);
+
+                // 5. Draw Axes
+                svg.append("g")
+                    .attr("transform", `translate(0,${height})`)
+                    .call(d3.axisBottom(x).ticks(d3.timeYear.every(1)).tickFormat(d3.timeFormat("%Y"))); // Show one tick per year
+
+                svg.append("g")
+                    .call(d3.axisLeft(y));
+
+                // X-Axis Label
+                svg.append("text")
+                    .attr("transform", `translate(${width / 2}, ${height + margin.bottom - 5})`)
+                    .style("text-anchor", "middle")
+                    .text("Date");
+
+                // Y-Axis Label
+                svg.append("text")
+                    .attr("transform", "rotate(-90)")
+                    .attr("y", 0 - margin.left)
+                    .attr("x", 0 - (height / 2))
+                    .attr("dy", "1em")
+                    .style("text-anchor", "middle")
+                    .text(`Price (${TARGET_TICKER})`);
+
+                // 6. Draw Line
+                const line = d3.line()
+                    .x(d => x(d.date))
+                    .y(d => y(d.value));
+
+                svg.append("path")
+                    .datum(data)
+                    .attr("class", "line")
+                    .attr("d", line);
+
+            } catch (error) {
+                console.error("Error drawing chart:", error);
+                d3.select("#chart").html(`<div class="loading-message" style="color: red;">Error: Could not load data from API at ${API_URL}. Check your server and port.</div>`);
+            }
+        }
+
+        // Run the function when the page loads
+        document.addEventListener('DOMContentLoaded', drawChart);
+
+    </script>
+</body>
+</html>
